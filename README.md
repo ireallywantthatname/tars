@@ -1,31 +1,29 @@
 # Be More Agent 🤖
-**A Customizable, Offline-First AI Agent for Raspberry Pi**
+**A Customizable Voice Agent for Raspberry Pi**
 
 [![Watch the Demo](https://img.youtube.com/vi/l5ggH-YhuAw/maxresdefault.jpg)](https://youtu.be/l5ggH-YhuAw)
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-red) ![License](https://img.shields.io/badge/License-MIT-green)
 
-This project turns a Raspberry Pi into a fully functional, conversational AI agent. Unlike cloud-based assistants, this agent runs **100% locally** on your device. It listens for a wake word, processes speech, "thinks" using a local Large Language Model (LLM), and speaks back with a low-latency neural voice—all while displaying reactive face animations.
+This project turns a Raspberry Pi into a fully functional, conversational AI agent. It listens for a wake word, processes speech, sends chat requests to the **Groq API**, and speaks back with a low-latency neural voice while displaying reactive face animations.
 
 **It is designed as a blank canvas:** You can easily swap the face images and sound effects to create your own character!
 
 ## ✨ Features
 
-* **100% Local Intelligence**: Powered by **Ollama** (LLM) and **Whisper.cpp** (Speech-to-Text). No API fees, no cloud data usage.
+* **Groq-Powered Chat**: Uses the Groq API for fast text responses with `llama-3.1-8b-instant` by default.
 * **Open Source Wake Word**: Wakes up to your custom model using **OpenWakeWord** (Offline & Free). No access keys required.
 * **Hardware-Aware Audio**: Automatically detects your microphone's sample rate and resamples audio on the fly to prevent ALSA errors.
 * **Smart Web Search**: Uses DuckDuckGo to find real-time news and information when the LLM doesn't know the answer.
 * **Reactive Faces**: The GUI updates the character's face based on its state (Listening, Thinking, Speaking, Idle).
 * **Fast Text-to-Speech**: Uses **Piper TTS** for low-latency, high-quality voice generation on the Pi.
-* **Vision Capable**: Can "see" and describe the world using a connected camera and the **Moondream** vision model.
+* **Speech-to-Text Fallback**: Uses local `whisper.cpp` when installed, or Groq transcription when it is not.
 
 ## 🛠️ Hardware Requirements
 
 * **Raspberry Pi 5** (Recommended) or Pi 4 (4GB RAM minimum)
 * USB Microphone & Speaker
 * LCD Screen (DSI or HDMI)
-* Raspberry Pi Camera Module
-
 ---
 
 ## 📂 Project Structure
@@ -36,9 +34,9 @@ be-more-agent/
 ├── setup.sh                   # Auto-installer script
 ├── wakeword.onnx              # OpenWakeWord model (The "Ear")
 ├── config.json                # User settings (Models, Prompt, Hardware)
-├── chat_memory.json           # Conversation history
+├── memory.json                # Conversation history
 ├── requirements.txt           # Python dependencies
-├── whisper.cpp/               # Speech-to-Text engine
+├── whisper.cpp/               # Optional local speech-to-text engine
 ├── piper/                     # Piper TTS engine & voice models
 ├── sounds/                    # Sound effects folder
 │   ├── greeting_sounds/       # Startup .wav files
@@ -65,25 +63,20 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install git -y
 ```
 
-### 2. Install Ollama
-This agent relies on [Ollama](https://ollama.com) to run the brain.
-```bash
-curl -fsSL https://ollama.com/install.sh| sh
-```
-*Pull the required models:*
-```bash
-ollama pull gemma:2b
-ollama pull moondream
-```
-
-### 3. Clone & Setup
+### 2. Clone & Setup
 ```bash
 git clone https://github.com/brenpoly/be-more-agent.git
 cd be-more-agent
 chmod +x setup.sh
 ./setup.sh
 ```
-*The setup script will install system libraries, create necessary folders, download Piper TTS, and set up the Python virtual environment.*
+*The setup script installs system libraries, downloads Piper TTS assets, and creates the Python virtual environment.*
+
+### 3. Configure Groq
+Create a Groq API key, then export it before starting the app:
+```bash
+export GROQ_API_KEY="your_api_key_here"
+```
 
 ### 4. Configure the Wake Word
 The setup script downloads a default wake word ("Hey Jarvis"). To use your own:
@@ -97,6 +90,8 @@ source venv/bin/activate
 python agent.py
 ```
 
+If `whisper.cpp` is not installed locally, the app will use Groq transcription for speech-to-text.
+
 ---
 
 ## 📂 Configuration (`config.json`)
@@ -105,8 +100,9 @@ You can modify the hardware behavior and personality in `config.json`. The `agen
 
 ```json
 {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
+    "text_model": "llama-3.1-8b-instant",
+    "vision_model": null,
+    "transcription_model": "whisper-large-v3-turbo",
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": true,
     "camera_rotation": 0,
@@ -142,6 +138,7 @@ When you run the `setup.sh` script, it will automatically download the compiled 
 ## ⚠️ Troubleshooting
 
 * **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
+* **Missing `GROQ_API_KEY`:** Export your Groq key before running `python agent.py` or `./start_agent.sh`.
 * **Shutdown Errors:** When you exit the script (Ctrl+C), you might see `Expression 'alsa_snd_pcm_mmap_begin' failed`. **This is normal.** It just means the audio stream was cut off mid-sample. It does not affect the functionality.
 * **Audio Glitches:** If the voice sounds fast or slow, the script attempts to auto-detect sample rates. Ensure your `config.json` points to a valid `.onnx` voice model in the `piper/` folder.
 If your custom BMO voice sounds incredibly deep, slow, or "demonic," don't panic! This is not an issue with the Piper installation or the setup script. It is almost always caused by a **Sample Rate (Hz)** mismatch between the model and the audio player.

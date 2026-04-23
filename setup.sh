@@ -8,6 +8,14 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}🤖 Pi Local Assistant Setup Script${NC}"
 
+if /usr/bin/python3 -c "import tkinter" >/dev/null 2>&1; then
+    PYTHON_BIN="/usr/bin/python3"
+else
+    PYTHON_BIN="python3"
+fi
+
+echo -e "${YELLOW}Using Python interpreter: ${PYTHON_BIN}${NC}"
+
 # 1. Install System Dependencies (The "Hidden" Requirements)
 echo -e "${YELLOW}[1/6] Installing System Tools (apt)...${NC}"
 sudo apt update
@@ -55,9 +63,10 @@ curl -L -o voices/bmo-custom.onnx.json "https://github.com/brenpoly/be-more-agen
 
 # 5. Install Python Libraries
 echo -e "${YELLOW}[5/6] Installing Python Libraries...${NC}"
-# Check if venv exists, if not create it
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
+# Rebuild the venv if it is missing or uses a Python without Tk support.
+if [ ! -d "venv" ] || ! ./venv/bin/python -c "import tkinter" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Creating virtual environment with ${PYTHON_BIN}...${NC}"
+    "${PYTHON_BIN}" -m venv --clear venv
 fi
 source venv/bin/activate
 pip install --upgrade pip
@@ -65,19 +74,11 @@ pip install --upgrade pip
 pip install --force-reinstall --no-cache-dir sounddevice
 pip install -r requirements.txt
 
-# 6. Pull AI Models
-echo -e "${YELLOW}[6/6] Checking AI Models...${NC}"
-if command -v ollama &> /dev/null; then
-    ollama pull gemma3:1b
-    ollama pull moondream
-else
-    echo -e "${RED}❌ Ollama not found. Please install it manually.${NC}"
-fi
-
-# 7. OpenWakeWord Model (Added this back so the user has a default)
+# 6. OpenWakeWord Model
+echo -e "${YELLOW}[6/6] Checking Wake Word Model...${NC}"
 if [ ! -f "wakeword.onnx" ]; then
     echo -e "${YELLOW}Downloading default 'Hey Jarvis' wake word...${NC}"
     curl -L -o wakeword.onnx https://github.com/dscripka/openWakeWord/raw/main/openwakeword/resources/models/hey_jarvis_v0.1.onnx
 fi
 
-echo -e "${GREEN}✨ Setup Complete! Run 'source venv/bin/activate' then 'python agent.py'${NC}"
+echo -e "${GREEN}✨ Setup Complete! Export GROQ_API_KEY, then run 'source venv/bin/activate' and 'python agent.py'.${NC}"

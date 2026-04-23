@@ -1,6 +1,6 @@
 # =========================================================================
 #  Be More Agent 🤖
-#  A Local, Offline-First AI Agent for Raspberry Pi
+#  A Groq-Backed Voice Agent for Raspberry Pi
 #
 #  Copyright (c) 2026 brenpoly
 #  Licensed under the MIT License
@@ -41,7 +41,7 @@ import scipy.signal
 # --- AI ENGINES ---
 import openwakeword
 from openwakeword.model import Model
-import ollama 
+from groq import Groq
 
 # --- WEB SEARCH (Using your working import) ---
 from duckduckgo_search import DDGS 
@@ -52,16 +52,19 @@ from duckduckgo_search import DDGS
 
 CONFIG_FILE = "config.json"
 MEMORY_FILE = "memory.json"
-BMO_IMAGE_FILE = "current_image.jpg"
 WAKE_WORD_MODEL = "./wakeword.onnx"
 WAKE_WORD_THRESHOLD = 0.5
+LOCAL_WHISPER_BIN = "./whisper.cpp/build/bin/whisper-cli"
+LOCAL_WHISPER_MODEL = "./whisper.cpp/models/ggml-base.en.bin"
+GROQ_API_KEY_ENV = "GROQ_API_KEY"
 
 # HARDWARE SETTINGS
 INPUT_DEVICE_NAME = None
 
 DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
+    "text_model": "llama-3.1-8b-instant",
+    "vision_model": None,
+    "transcription_model": "whisper-large-v3-turbo",
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": True,
     "camera_rotation": 0,
@@ -70,13 +73,17 @@ DEFAULT_CONFIG = {
     "input_sample_rate": None
 }
 
-# LLM SETTINGS
-OLLAMA_OPTIONS = {
-    'keep_alive': '-1',     
-    'num_thread': 4,
-    'temperature': 0.7,     
-    'top_k': 40,
-    'top_p': 0.9
+# GROQ SETTINGS
+GROQ_CHAT_OPTIONS = {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "max_completion_tokens": 512
+}
+
+GROQ_SUMMARY_OPTIONS = {
+    "temperature": 0.2,
+    "top_p": 1,
+    "max_completion_tokens": 128
 }
 
 def load_config():
@@ -92,7 +99,7 @@ def load_config():
 
 CURRENT_CONFIG = load_config()
 TEXT_MODEL = CURRENT_CONFIG["text_model"]
-VISION_MODEL = CURRENT_CONFIG["vision_model"]
+TRANSCRIPTION_MODEL = CURRENT_CONFIG.get("transcription_model", DEFAULT_CONFIG["transcription_model"])
 
 def resolve_input_device(config):
     requested = config.get("input_device")
@@ -171,7 +178,10 @@ Personality: Cute, helpful, robot.
 Style: Short sentences. Enthusiastic.
 
 INSTRUCTIONS:
-- If the user asks for a physical action (time, search, photo), output JSON.
+- If the user asks for the current time or a web search, output JSON only.
+- Available tools are: get_time and search_web.
+- You do not have camera or vision access right now.
+- If the user asks what you can see or asks for a photo, explain briefly that vision is disabled.
 - If the user just wants to chat, reply with NORMAL TEXT.
 
 ### EXAMPLES ###
@@ -186,7 +196,7 @@ User: Search for news about robots.
 You: {"action": "search_web", "value": "robots news"}
 
 User: What do you see right now?
-You: {"action": "capture_image", "value": "environment"}
+You: Sorry, I cannot use the camera right now.
 
 ### END EXAMPLES ###
 """
@@ -240,6 +250,7 @@ class BotGUI:
         self.tts_active = threading.Event()
         self.current_audio_process = None 
         self.exiting = False
+        self.groq_client = None
         
         # --- WAKE WORD INITIALIZATION ---
         print("[INIT] Loading Wake Word...", flush=True)
@@ -290,6 +301,49 @@ class BotGUI:
             return None
         except: return None
 
+    def has_local_whisper(self):
+        return os.path.exists(LOCAL_WHISPER_BIN) and os.path.exists(LOCAL_WHISPER_MODEL)
+
+    def get_groq_client(self):
+        if self.groq_client is not None:
+            return self.groq_client
+
+        api_key = os.environ.get(GROQ_API_KEY_ENV)
+        if not api_key:
+            raise RuntimeError(f"{GROQ_API_KEY_ENV} is not set. Export it before starting the agent.")
+
+        self.groq_client = Groq(api_key=api_key)
+        return self.groq_client
+
+    def stream_chat_completion(self, messages):
+        client = self.get_groq_client()
+        return client.chat.completions.create(
+            model=TEXT_MODEL,
+            messages=messages,
+            stream=True,
+            **GROQ_CHAT_OPTIONS,
+        )
+
+    def complete_chat_completion(self, messages, options=None):
+        client = self.get_groq_client()
+        request_options = GROQ_CHAT_OPTIONS.copy()
+        if options:
+            request_options.update(options)
+
+        response = client.chat.completions.create(
+            model=TEXT_MODEL,
+            messages=messages,
+            stream=False,
+            **request_options,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    def extract_stream_text(self, chunk):
+        try:
+            return chunk.choices[0].delta.content or ""
+        except (AttributeError, IndexError, TypeError):
+            return ""
+
     def safe_exit(self):
         if self.exiting:
             return
@@ -306,10 +360,6 @@ class BotGUI:
         self.tts_active.clear() 
         
         self.save_chat_history()
-        
-        try:
-            ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=0)
-        except: pass
         try:
             sd.stop()
         except: pass
@@ -438,6 +488,18 @@ class BotGUI:
             self.response_text.config(state=tk.DISABLED)
         self.master.after(0, update_text_stream)
 
+    def queue_assistant_response(self, text):
+        if not text:
+            return
+
+        self.thinking_sound_active.clear()
+        self.set_state(BotStates.SPEAKING, "Speaking...")
+        self.append_to_text("BOT: ", newline=False)
+        self.append_to_text(text, newline=True)
+        with self.tts_queue_lock:
+            self.tts_queue.append(text)
+        self.session_memory.append({"role": "assistant", "content": text})
+
     # =========================================================================
     # 3. ACTION ROUTER
     # =========================================================================
@@ -447,17 +509,20 @@ class BotGUI:
         value = action_data.get("value") or action_data.get("query")
         
         VALID_TOOLS = {
-            "get_time", "search_web", "capture_image"
+            "get_time", "search_web"
         }
         
         ALIASES = {
             "google": "search_web", "browser": "search_web", "news": "search_web",         
-            "search_news": "search_web", "look": "capture_image", "see": "capture_image", 
+            "search_news": "search_web",
             "check_time": "get_time"
         }
 
         action = ALIASES.get(raw_action, raw_action)
         print(f"ACTION: {raw_action} -> {action}", flush=True)
+
+        if action == "capture_image":
+            return "VISION_DISABLED"
 
         if action not in VALID_TOOLS:
             if value and isinstance(value, str) and len(value.split()) > 1:
@@ -505,9 +570,6 @@ class BotGUI:
                 print(f"[DEBUG] Connection/Library Error: {e}", flush=True)
                 return "SEARCH_ERROR"
         
-        elif action == "capture_image":
-             return "IMAGE_CAPTURE_TRIGGERED"
-
         return None
 
     # =========================================================================
@@ -555,12 +617,12 @@ class BotGUI:
 
     def warm_up_logic(self):
         self.set_state(BotStates.WARMUP, "Warming up brains...")
-        try:
-            ollama.generate(model=TEXT_MODEL, prompt="", keep_alive=-1)
-        except Exception as e:
-            print(f"Failed to load {TEXT_MODEL}: {e}", flush=True)
+        self.get_groq_client()
+        stt_backend = "local whisper.cpp" if self.has_local_whisper() else f"Groq STT ({TRANSCRIPTION_MODEL})"
+        print(f"[INIT] Groq chat model: {TEXT_MODEL}", flush=True)
+        print(f"[INIT] Speech-to-text backend: {stt_backend}", flush=True)
         self.play_sound(self.get_random_sound(greeting_sounds_dir))
-        print("Models loaded.", flush=True)
+        print("Model clients ready.", flush=True)
 
     def detect_wake_word_or_ptt(self):
         self.set_state(BotStates.IDLE, "Waiting...")
@@ -774,35 +836,37 @@ class BotGUI:
     def transcribe_audio(self, filename):
         print("Transcribing...", flush=True)
         try:
-            result = subprocess.run(
-                ["./whisper.cpp/build/bin/whisper-cli", "-m", "./whisper.cpp/models/ggml-base.en.bin", "-l", "en", "-t", "4", "-f", filename],
-                capture_output=True, text=True
-            )
-            transcription_lines = result.stdout.strip().split('\n')
-            if transcription_lines and transcription_lines[-1].strip():
-                last_line = transcription_lines[-1].strip()
-                if ']' in last_line: transcription = last_line.split("]")[1].strip()
-                else: transcription = last_line
-            else: transcription = ""
+            if self.has_local_whisper():
+                result = subprocess.run(
+                    [LOCAL_WHISPER_BIN, "-m", LOCAL_WHISPER_MODEL, "-l", "en", "-t", "4", "-f", filename],
+                    capture_output=True, text=True, check=False
+                )
+                transcription_lines = result.stdout.strip().split('\n')
+                if transcription_lines and transcription_lines[-1].strip():
+                    last_line = transcription_lines[-1].strip()
+                    if ']' in last_line:
+                        transcription = last_line.split("]")[1].strip()
+                    else:
+                        transcription = last_line
+                else:
+                    transcription = ""
+            else:
+                client = self.get_groq_client()
+                with open(filename, "rb") as audio_file:
+                    result = client.audio.transcriptions.create(
+                        file=audio_file,
+                        model=TRANSCRIPTION_MODEL,
+                        response_format="json",
+                        language="en",
+                        temperature=0,
+                    )
+                transcription = (result.text or "").strip()
+
             print(f"Heard: '{transcription}'", flush=True)
             return transcription.strip()
         except Exception as e:
             print(f"Transcription Error: {e}")
             return ""
-
-    def capture_image(self):
-        self.set_state(BotStates.CAPTURING, "Watching...")
-        try:
-            subprocess.run(["rpicam-still", "-t", "500", "-n", "--width", "640", "--height", "480", "-o", BMO_IMAGE_FILE], check=True)
-            rotation = CURRENT_CONFIG.get("camera_rotation", 0)
-            if rotation != 0:
-                img = Image.open(BMO_IMAGE_FILE)
-                img = img.rotate(rotation, expand=True) 
-                img.save(BMO_IMAGE_FILE)
-            return BMO_IMAGE_FILE
-        except Exception as e:
-            print(f"Camera Error: {e}")
-            return None
 
     # =========================================================================
     # 5. CHAT & RESPOND
@@ -818,43 +882,44 @@ class BotGUI:
             self.set_state(BotStates.IDLE, "Memory Wiped")
             return
 
-        model_to_use = VISION_MODEL if img_path else TEXT_MODEL
-        self.set_state(BotStates.THINKING, "Thinking...", cam_path=img_path)
+        self.set_state(BotStates.THINKING, "Thinking...")
         
-        messages = []
-        if img_path:
-            messages = [{"role": "user", "content": text, "images": [img_path]}]
-        else:
-            user_msg = {"role": "user", "content": text}
-            messages = self.permanent_memory + self.session_memory + [user_msg]
+        user_msg = {"role": "user", "content": text}
+        messages = self.permanent_memory + self.session_memory + [user_msg]
         
         self.thinking_sound_active.set()
         threading.Thread(target=self._run_thinking_sound_loop, daemon=True).start()
         
         full_response_buffer = ""
-        sentence_buffer = "" 
+        sentence_buffer = ""
+        is_action_mode = None
+        rendered_stream = False
         
         try:
-            stream = ollama.chat(model=model_to_use, messages=messages, stream=True, options=OLLAMA_OPTIONS)
-            
-            is_action_mode = False
+            stream = self.stream_chat_completion(messages)
             
             for chunk in stream:
                 if self.interrupted.is_set(): break 
-                content = chunk['message']['content']
+                content = self.extract_stream_text(chunk)
+                if not content:
+                    continue
+
                 full_response_buffer += content
-                
-                if '{"' in content or "action:" in content.lower():
+
+                stripped_buffer = full_response_buffer.lstrip()
+                if is_action_mode is None and stripped_buffer:
+                    is_action_mode = stripped_buffer.startswith("{")
+
+                if is_action_mode:
                     is_action_mode = True
                     self.thinking_sound_active.clear()
                     continue 
 
-                if is_action_mode: continue
-
                 self.thinking_sound_active.clear()
                 if self.current_state != BotStates.SPEAKING:
-                    self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
+                    self.set_state(BotStates.SPEAKING, "Speaking...")
                     self.append_to_text("BOT: ", newline=False)
+                    rendered_stream = True
 
                 self._stream_to_text(content)
                 
@@ -872,45 +937,26 @@ class BotGUI:
 
                     if tool_result and tool_result.startswith("CHAT_FALLBACK::"):
                         chat_text = tool_result.split("::", 1)[1]
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(chat_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(chat_text)
-                        self.session_memory.append({"role": "assistant", "content": chat_text})
+                        self.queue_assistant_response(chat_text)
                         self.wait_for_tts()
                         self.set_state(BotStates.IDLE, "Ready")
                         return
 
-                    if tool_result == "IMAGE_CAPTURE_TRIGGERED":
-                        new_img_path = self.capture_image()
-                        if new_img_path:
-                            self.chat_and_respond(text, img_path=new_img_path)
-                            return 
-
-                    elif tool_result == "INVALID_ACTION":
+                    if tool_result == "INVALID_ACTION":
                         fallback_text = "I am not sure how to do that."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
+                        self.queue_assistant_response(fallback_text)
 
                     elif tool_result == "SEARCH_EMPTY":
                         fallback_text = "I searched, but I couldn't find any news about that."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
+                        self.queue_assistant_response(fallback_text)
 
                     elif tool_result == "SEARCH_ERROR":
                         fallback_text = "I cannot reach the internet right now."
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(fallback_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(fallback_text)
+                        self.queue_assistant_response(fallback_text)
+
+                    elif tool_result == "VISION_DISABLED":
+                        fallback_text = "I cannot use the camera right now."
+                        self.queue_assistant_response(fallback_text)
 
                     elif tool_result:
                         summary_prompt = [
@@ -921,18 +967,16 @@ class BotGUI:
                         self.set_state(BotStates.THINKING, "Reading...")
                         self.thinking_sound_active.set()
                         
-                        final_resp = ollama.chat(model=model_to_use, messages=summary_prompt, stream=False, options=OLLAMA_OPTIONS)
-                        final_text = final_resp['message']['content']
-                        
-                        self.thinking_sound_active.clear()
-                        self.set_state(BotStates.SPEAKING, "Speaking...", cam_path=img_path)
-                        
-                        self.append_to_text("BOT: ", newline=False)
-                        self.append_to_text(final_text, newline=True)
-                        with self.tts_queue_lock: self.tts_queue.append(final_text)
-                        self.session_memory.append({"role": "assistant", "content": final_text})
+                        final_text = self.complete_chat_completion(summary_prompt, GROQ_SUMMARY_OPTIONS)
+                        self.queue_assistant_response(final_text)
+                elif full_response_buffer.strip():
+                    self.queue_assistant_response(full_response_buffer.strip())
             else:
-                self.append_to_text("")
+                if sentence_buffer.strip():
+                    with self.tts_queue_lock:
+                        self.tts_queue.append(sentence_buffer.strip())
+                if rendered_stream:
+                    self.append_to_text("")
                 self.session_memory.append({"role": "assistant", "content": full_response_buffer}) 
             
             self.wait_for_tts()
@@ -1061,11 +1105,24 @@ class BotGUI:
         except: pass
 
     def load_chat_history(self):
+        history = [{"role": "system", "content": SYSTEM_PROMPT}]
         if os.path.exists(MEMORY_FILE):
             try:
-                with open(MEMORY_FILE, "r") as f: return json.load(f)
-            except: pass
-        return [{"role": "system", "content": SYSTEM_PROMPT}]
+                with open(MEMORY_FILE, "r") as f:
+                    loaded_history = json.load(f)
+
+                if isinstance(loaded_history, list):
+                    for message in loaded_history:
+                        if not isinstance(message, dict):
+                            continue
+                        if message.get("role") not in {"user", "assistant"}:
+                            continue
+                        content = message.get("content")
+                        if isinstance(content, str) and content.strip():
+                            history.append({"role": message["role"], "content": content})
+            except Exception:
+                pass
+        return history
 
     def save_chat_history(self):
         full = self.permanent_memory + self.session_memory
