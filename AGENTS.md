@@ -1,29 +1,36 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is intentionally flat. [`agent.py`](/home/dietpi/projects/agent/agent.py) is the main application and contains the GUI, audio pipeline, wake-word handling, Ollama integration, web search, and vision flow. [`setup.sh`](/home/dietpi/projects/agent/setup.sh) installs OS packages, creates asset folders, downloads Piper assets, and prepares `venv/`. [`start_agent.sh`](/home/dietpi/projects/agent/start_agent.sh) is the simplest launch entrypoint.
+`agent.py` is the main application entrypoint and currently contains most runtime logic: GUI, audio I/O, wake-word handling, Groq calls, and TTS orchestration. Setup and launch scripts live at the repo root in `setup.sh` and `start_agent.sh`.
 
-Runtime assets live under `faces/` and `sounds/`, grouped by state such as `faces/idle/` or `sounds/error_sounds/`. Treat `piper/`, `voices/`, `.onnx` files, captured media, and memory files as generated or local-only artifacts unless a change explicitly requires them.
+Runtime assets are organized by type: `faces/` for state-based PNG sequences, `sounds/` for grouped WAV effects, `voices/` for custom voice models, and `piper/` for the downloaded Piper runtime. Local state such as `config.json`, `memory.json`, and temporary audio files is generated in the root directory.
 
 ## Build, Test, and Development Commands
-Use the existing shell workflow:
+Use the provided scripts rather than ad hoc setup.
 
-- `./setup.sh` installs system and Python dependencies and pulls required models.
-- `source venv/bin/activate` activates the local virtual environment.
-- `python agent.py` runs the agent directly for development.
-- `./start_agent.sh` starts the agent from the repo root with stricter shell settings.
-- `python -m py_compile agent.py` performs a quick syntax check before submitting changes.
+- `./setup.sh` installs system packages, creates `venv/`, downloads Piper assets, and fetches the default wake-word model.
+- `source venv/bin/activate && python agent.py` runs the agent directly for development.
+- `./start_agent.sh` validates `GROQ_API_KEY` and launches with the project virtualenv.
+- `./venv/bin/pip install -r requirements.txt` refreshes Python dependencies after editing `requirements.txt`.
 
 ## Coding Style & Naming Conventions
-Follow the existing Python style in `agent.py`: 4-space indentation, `snake_case` for functions and variables, `PascalCase` for classes, and `UPPER_CASE` for module constants like `DEFAULT_CONFIG`. Keep imports grouped, prefer small helper functions over deeply nested blocks, and preserve the current inline comment style for hardware- or model-specific logic.
+Follow existing Python style in `agent.py`: 4-space indentation, `snake_case` for functions and variables, `UPPER_SNAKE_CASE` for constants, and small helper functions for hardware or config concerns. Keep comments sparse and practical.
 
-No formatter or linter is configured in-repo. Keep changes consistent with surrounding code and avoid large style-only rewrites.
+Asset names should stay descriptive and sequence-friendly, for example `faces/thinking/thinking 01.png` or `sounds/ack_sounds/okay.wav`. Shell scripts should remain POSIX-style Bash with `set -euo pipefail` when practical.
 
 ## Testing Guidelines
-There is no automated test suite yet. Validate changes with targeted manual smoke tests: start the app, confirm the Tkinter UI loads, verify a wake-word or push-to-talk path, and test any changed audio, search, or camera behavior. If you add tests later, place them under `tests/` and name files `test_*.py`.
+There is no automated test suite in this repository today. Validate changes manually on target hardware:
+
+- run `./start_agent.sh`
+- confirm wake-word detection, transcription, chat response, and TTS playback
+- verify asset loading for any modified `faces/` or `sounds/` directory
+
+If you add logic that can be isolated from hardware, prefer `pytest` tests under a new `tests/` directory with filenames like `test_config.py`.
 
 ## Commit & Pull Request Guidelines
-Recent history uses short imperative subjects such as `Update README.md` and `Update setup.sh`. Keep commit titles brief and specific, for example `Fix input device selection`. PRs should summarize behavior changes, list manual test coverage, mention hardware assumptions, and include screenshots when UI states or face assets change.
+History shows short, imperative subjects with occasional prefixes such as `feat:` and `Fix:`. Prefer that format: `feat: add configurable input device` or `Fix: handle missing Piper model`.
 
-## Configuration & Asset Notes
-Do not commit personal config or conversation history unnecessarily. Review `.gitignore` before adding assets; large models, generated media, and local memory files are intentionally excluded.
+Pull requests should include a concise summary, note any Raspberry Pi or audio hardware used for validation, mention config or asset changes, and attach screenshots for UI/face updates when relevant.
+
+## Security & Configuration Tips
+Do not commit secrets. `GROQ_API_KEY` must be provided through the environment, and large generated artifacts such as `piper/`, `.onnx` models, `memory.json`, and temporary media should stay untracked per `.gitignore`.
