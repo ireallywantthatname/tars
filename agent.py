@@ -28,7 +28,8 @@ import atexit
 import datetime
 import warnings
 import wave
-import struct 
+import struct
+import glob
 
 # Suppress harmless library warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
@@ -46,6 +47,11 @@ from groq import Groq
 # --- WEB SEARCH (Using your working import) ---
 from duckduckgo_search import DDGS 
 
+try:
+    import serial
+except ImportError:
+    serial = None
+
 # =========================================================================
 # 1. CONFIGURATION & CONSTANTS
 # =========================================================================
@@ -57,6 +63,7 @@ WAKE_WORD_THRESHOLD = 0.5
 LOCAL_WHISPER_BIN = "./whisper.cpp/build/bin/whisper-cli"
 LOCAL_WHISPER_MODEL = "./whisper.cpp/models/ggml-base.en.bin"
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
+SENSOR_PORT_GLOBS = ("/dev/ttyACM*", "/dev/ttyUSB*")
 
 # HARDWARE SETTINGS
 INPUT_DEVICE_NAME = None
@@ -70,7 +77,10 @@ DEFAULT_CONFIG = {
     "camera_rotation": 0,
     "system_prompt_extras": "",
     "input_device": None,
-    "input_sample_rate": None
+    "input_sample_rate": None,
+    "sensor_serial_port": None,
+    "sensor_serial_baud": 115200,
+    "sensor_serial_timeout": 2.0
 }
 
 # GROQ SETTINGS
@@ -178,8 +188,8 @@ Personality: Cute, helpful, robot.
 Style: Short sentences. Enthusiastic.
 
 INSTRUCTIONS:
-- If the user asks for the current time or a web search, output JSON only.
-- Available tools are: get_time and search_web.
+- If the user asks for the current time, a web search, or the room temperature, output JSON only.
+- Available tools are: get_time, search_web, and get_temperature.
 - You do not have camera or vision access right now.
 - If the user asks what you can see or asks for a photo, explain briefly that vision is disabled.
 - If the user just wants to chat, reply with NORMAL TEXT.
@@ -194,6 +204,9 @@ You: Hi! I am ready to help!
 
 User: Search for news about robots.
 You: {"action": "search_web", "value": "robots news"}
+
+User: What is the room temperature?
+You: {"action": "get_temperature", "value": "room"}
 
 User: What do you see right now?
 You: Sorry, I cannot use the camera right now.
@@ -500,6 +513,88 @@ class BotGUI:
             self.tts_queue.append(text)
         self.session_memory.append({"role": "assistant", "content": text})
 
+    def find_sensor_serial_port(self):
+        configured_port = CURRENT_CONFIG.get("sensor_serial_port")
+        if configured_port:
+            return configured_port
+
+        for pattern in SENSOR_PORT_GLOBS:
+            matches = sorted(glob.glob(pattern))
+            if matches:
+                return matches[0]
+        return None
+
+    def parse_temperature_response(self, raw_line):
+        line = (raw_line or "").strip()
+        if not line:
+            return None
+
+        patterns = [
+            r"TEMP_C\s*:\s*(-?\d+(?:\.\d+)?)",
+            r"temperature\s*[:=]\s*(-?\d+(?:\.\d+)?)",
+            r"temp(?:erature)?\s*[:=]\s*(-?\d+(?:\.\d+)?)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                return float(match.group(1))
+        return None
+
+    def get_room_temperature(self):
+        if serial is None:
+            print("[SENSOR] pyserial is not installed.", flush=True)
+            return "SENSOR_UNAVAILABLE"
+
+        port = self.find_sensor_serial_port()
+        if not port:
+            print("[SENSOR] No ESP32 serial port found.", flush=True)
+            return "SENSOR_UNAVAILABLE"
+
+        baudrate = int(CURRENT_CONFIG.get("sensor_serial_baud", 115200))
+        timeout = float(CURRENT_CONFIG.get("sensor_serial_timeout", 2.0))
+        deadline = time.time() + timeout
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = baudrate
+        ser.timeout = 0.25
+        ser.write_timeout = timeout
+        ser.dsrdtr = False
+        ser.rtscts = False
+        ser.dtr = False
+        ser.rts = False
+
+        print(f"[SENSOR] Reading temperature from {port} @ {baudrate} baud...", flush=True)
+
+        try:
+            ser.open()
+            time.sleep(0.2)
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            ser.write(b"TEMP\n")
+            ser.flush()
+
+            while time.time() < deadline:
+                raw_line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not raw_line:
+                    continue
+
+                print(f"[SENSOR] Serial line: {raw_line}", flush=True)
+                temperature_c = self.parse_temperature_response(raw_line)
+                if temperature_c is not None:
+                    return f"ROOM TEMPERATURE: {temperature_c:.1f} C"
+
+            print("[SENSOR] Timed out waiting for a temperature response.", flush=True)
+            return "SENSOR_ERROR"
+        except Exception as e:
+            print(f"[SENSOR] Temperature read failed: {e}", flush=True)
+            return "SENSOR_ERROR"
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+
     # =========================================================================
     # 3. ACTION ROUTER
     # =========================================================================
@@ -509,13 +604,18 @@ class BotGUI:
         value = action_data.get("value") or action_data.get("query")
         
         VALID_TOOLS = {
-            "get_time", "search_web"
+            "get_time", "search_web", "get_temperature"
         }
         
         ALIASES = {
             "google": "search_web", "browser": "search_web", "news": "search_web",         
             "search_news": "search_web",
-            "check_time": "get_time"
+            "check_time": "get_time",
+            "temperature": "get_temperature",
+            "check_temperature": "get_temperature",
+            "get_room_temperature": "get_temperature",
+            "room_temperature": "get_temperature",
+            "read_temperature": "get_temperature"
         }
 
         action = ALIASES.get(raw_action, raw_action)
@@ -532,6 +632,9 @@ class BotGUI:
         if action == "get_time":
             now = datetime.datetime.now().strftime("%I:%M %p")
             return f"The current time is {now}."
+
+        elif action == "get_temperature":
+            return self.get_room_temperature()
         
         elif action == "search_web":
             print(f"Searching web for: {value}...", flush=True)
@@ -952,6 +1055,14 @@ class BotGUI:
 
                     elif tool_result == "SEARCH_ERROR":
                         fallback_text = "I cannot reach the internet right now."
+                        self.queue_assistant_response(fallback_text)
+
+                    elif tool_result == "SENSOR_UNAVAILABLE":
+                        fallback_text = "I cannot find the temperature sensor right now."
+                        self.queue_assistant_response(fallback_text)
+
+                    elif tool_result == "SENSOR_ERROR":
+                        fallback_text = "I cannot read the temperature right now."
                         self.queue_assistant_response(fallback_text)
 
                     elif tool_result == "VISION_DISABLED":

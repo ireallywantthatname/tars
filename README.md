@@ -15,6 +15,7 @@ This project turns a Raspberry Pi into a fully functional, conversational AI age
 * **Open Source Wake Word**: Wakes up to your custom model using **OpenWakeWord** (Offline & Free). No access keys required.
 * **Hardware-Aware Audio**: Automatically detects your microphone's sample rate and resamples audio on the fly to prevent ALSA errors.
 * **Smart Web Search**: Uses DuckDuckGo to find real-time news and information when the LLM doesn't know the answer.
+* **USB Sensor Queries**: Can ask an attached ESP32 for a live room temperature reading over serial.
 * **Reactive Faces**: The GUI updates the character's face based on its state (Listening, Thinking, Speaking, Idle).
 * **Fast Text-to-Speech**: Uses **Piper TTS** for low-latency, high-quality voice generation on the Pi.
 * **Speech-to-Text Fallback**: Uses local `whisper.cpp` when installed, or Groq transcription when it is not.
@@ -106,9 +107,22 @@ You can modify the hardware behavior and personality in `config.json`. The `agen
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": true,
     "camera_rotation": 0,
-    "system_prompt_extras": "You are a helpful robot assistant. Keep responses short and cute."
+    "system_prompt_extras": "You are a helpful robot assistant. Keep responses short and cute.",
+    "sensor_serial_port": null,
+    "sensor_serial_baud": 115200,
+    "sensor_serial_timeout": 2.0
 }
 ```
+
+### ESP32 Temperature Sensor Protocol
+
+To support spoken temperature requests, the Pi now opens the ESP32 serial port directly instead of relying on `pio device monitor`.
+
+- Pi request: `TEMP` followed by a newline
+- ESP32 response: `TEMP_C:<number>` followed by a newline
+- Example response: `TEMP_C:26.4`
+
+If `sensor_serial_port` is `null`, the agent will auto-detect the first matching `/dev/ttyACM*` or `/dev/ttyUSB*` device.
 
 ---
 
@@ -138,6 +152,7 @@ When you run the `setup.sh` script, it will automatically download the compiled 
 ## ⚠️ Troubleshooting
 
 * **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
+* **Temperature sensor not found:** Ensure the ESP32 is connected by USB, the virtual environment has `pyserial` installed, and the baud rate in `config.json` matches the firmware.
 * **Missing `GROQ_API_KEY`:** Export your Groq key before running `python agent.py` or `./start_agent.sh`.
 * **Shutdown Errors:** When you exit the script (Ctrl+C), you might see `Expression 'alsa_snd_pcm_mmap_begin' failed`. **This is normal.** It just means the audio stream was cut off mid-sample. It does not affect the functionality.
 * **Audio Glitches:** If the voice sounds fast or slow, the script attempts to auto-detect sample rates. Ensure your `config.json` points to a valid `.onnx` voice model in the `piper/` folder.

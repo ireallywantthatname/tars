@@ -7,5 +7,8 @@
   "camera_rotation": 180,
   "system_prompt_extras": "",
   "input_device": null,
-  "input_sample_rate": 44100
+  "input_sample_rate": 44100,
+  "sensor_serial_port": null,
+  "sensor_serial_baud": 115200,
+  "sensor_serial_timeout": 2.0
 }
