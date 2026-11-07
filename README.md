@@ -1,29 +1,28 @@
 # TARS
 
-A customizable voice agent for Raspberry Pi.
-
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-red) ![License](https://img.shields.io/badge/License-MIT-green)
 
-This project turns a Raspberry Pi into a conversational AI agent. It listens for a wake word, processes speech, sends chat requests to the Groq API, and speaks back with a low-latency neural voice while displaying reactive face animations.
+![TARS hardware build](tars.jpg)
 
-You can swap the face images and sound effects to create your own character.
+TARS is a voice agent for Raspberry Pi. It detects a wake word with OpenWakeWord, transcribes speech with `whisper.cpp` or the Groq API, streams chat responses from Groq, and synthesizes speech on the device with Piper TTS. A fullscreen Tkinter window renders PNG sequences from `faces/` and plays WAV effects from `sounds/` as the agent changes state.
 
 ## Features
 
-* Groq-powered chat: Uses the Groq API for fast text responses with `llama-3.1-8b-instant` by default.
-* Open source wake word: Wakes up to your custom model using OpenWakeWord offline.
-* Hardware-aware audio: Detects your microphone sample rate and resamples audio on the fly.
-* Web search: Uses DuckDuckGo to find real-time information when the model does not have the answer.
-* USB sensor queries: Reads room temperature from an attached ESP32 over serial.
-* Reactive faces: Updates the interface based on state (listening, thinking, speaking, idle).
-* Fast text-to-speech: Uses Piper TTS for local voice synthesis on the Pi.
-* Speech-to-text fallback: Uses local `whisper.cpp` when installed, or Groq transcription when it is not.
+* Runs `llama-3.1-8b-instant` through the Groq API for chat completions and tool calls.
+* Detects wake words offline with OpenWakeWord and `.onnx` models.
+* Queries microphone sample rates with `sounddevice` and resamples audio to match the active model.
+* Transcribes audio with `./whisper.cpp/build/bin/whisper-cli` when present, or sends audio to Groq `whisper-large-v3-turbo`.
+* Synthesizes speech with Piper TTS and resamples output to the speaker sample rate.
+* Searches news and web results through DuckDuckGo when a prompt requires current information.
+* Reads room temperature in Celsius from an ESP32 over USB serial.
+* Animates state transitions across `idle`, `listening`, `thinking`, `speaking`, `error`, `capturing`, and `warmup`.
 
 ## Hardware requirements
 
-* Raspberry Pi 5 or Pi 4 (4GB RAM minimum)
+* Raspberry Pi 5 or Raspberry Pi 4 with at least 4 GB RAM
 * USB microphone and speaker
-* LCD screen (DSI or HDMI)
+* DSI or HDMI display
+* Optional ESP32 temperature sensor over USB serial
 
 ## Project structure
 
@@ -31,36 +30,46 @@ You can swap the face images and sound effects to create your own character.
 tars/
 ├── agent.py
 ├── setup.sh
+├── start_agent.sh
+├── tars.desktop
+├── tars.jpg
 ├── wakeword.onnx
 ├── config.json
 ├── memory.json
 ├── requirements.txt
 ├── whisper.cpp/
 ├── piper/
+├── voices/
 ├── sounds/
 │   ├── greeting_sounds/
 │   ├── thinking_sounds/
 │   ├── ack_sounds/
 │   └── error_sounds/
 └── faces/
+    ├── capturing/
+    ├── error/
     ├── idle/
     ├── listening/
-    ├── thinking/
     ├── speaking/
-    ├── error/
+    ├── thinking/
     └── warmup/
 ```
 
 ## Installation
 
 ### 1. Prerequisites
-Ensure your Raspberry Pi OS is up to date:
+
+Update Raspberry Pi OS and install Git:
+
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install git -y
 ```
 
-### 2. Clone and setup
+### 2. Clone and set up
+
+Clone the repository and run the setup script:
+
 ```bash
 git clone https://github.com/ireallywantthatname/tars.git
 cd tars
@@ -68,64 +77,80 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
+`setup.sh` installs apt packages, downloads the `aarch64` Piper binary and default voice models, creates `venv/`, installs Python packages from `requirements.txt`, and downloads the default `hey_jarvis_v0.1.onnx` model to `wakeword.onnx`.
+
 ### 3. Configure Groq
-Export your Groq API key before running the agent:
+
+Set your Groq API key in the environment:
+
 ```bash
 export GROQ_API_KEY="your_api_key_here"
 ```
 
 ### 4. Configure the wake word
-The setup script downloads a default wake word ("Hey Jarvis"). To use your own:
-1. Train a model at [OpenWakeWord](https://github.com/dscripka/openWakeWord).
-2. Place the `.onnx` file in the root folder.
-3. Rename it to `wakeword.onnx`.
+
+To replace the default `hey_jarvis_v0.1.onnx` model with a custom wake word:
+
+1. Train an `.onnx` model with [OpenWakeWord](https://github.com/dscripka/openWakeWord).
+2. Copy the file to the repository root as `wakeword.onnx`.
 
 ### 5. Run the agent
+
+Start the agent with the launch script:
+
+```bash
+./start_agent.sh
+```
+
+You can also activate the virtual environment and run `agent.py`:
+
 ```bash
 source venv/bin/activate
 python agent.py
 ```
 
-## Configuration (`config.json`)
+Press `Return` to toggle push-to-talk recording, `Space` to interrupt speech playback, or `Escape` to exit fullscreen and save chat history.
 
-You can modify hardware settings and personality options in `config.json`:
+## Configuration
+
+Edit `config.json` to change models, audio devices, system prompt text, and serial port settings:
 
 ```json
 {
-    "text_model": "llama-3.1-8b-instant",
-    "vision_model": null,
-    "transcription_model": "whisper-large-v3-turbo",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": true,
-    "camera_rotation": 0,
-    "system_prompt_extras": "You are TARS, a helpful assistant. Keep responses short.",
-    "sensor_serial_port": null,
-    "sensor_serial_baud": 115200,
-    "sensor_serial_timeout": 2.0
+  "text_model": "llama-3.1-8b-instant",
+  "vision_model": null,
+  "transcription_model": "whisper-large-v3-turbo",
+  "voice_model": "piper/en_GB-semaine-medium.onnx",
+  "chat_memory": true,
+  "camera_rotation": 180,
+  "system_prompt_extras": "",
+  "input_device": null,
+  "input_sample_rate": 44100,
+  "sensor_serial_port": null,
+  "sensor_serial_baud": 115200,
+  "sensor_serial_timeout": 2.0
 }
 ```
 
 ### ESP32 temperature sensor protocol
 
-The Pi queries the ESP32 serial port directly for temperature readings:
+When you ask for the room temperature, `agent.py` opens the configured serial port and sends `TEMP\n`. The ESP32 must reply with a newline-terminated string matching `TEMP_C:<number>`, such as `TEMP_C:26.4`.
 
-* Pi request: `TEMP` followed by a newline
-* ESP32 response: `TEMP_C:<number>` followed by a newline
-* Example response: `TEMP_C:26.4`
-
-If `sensor_serial_port` is `null`, the agent auto-detects the first matching `/dev/ttyACM*` or `/dev/ttyUSB*` device.
+If `sensor_serial_port` is `null`, `agent.py` selects the first available `/dev/ttyACM*` or `/dev/ttyUSB*` device.
 
 ## Customizing character assets
 
-1. Faces: Place PNG sequences in `faces/[state]/`. The script loops through all images in the folder.
-2. Sounds: Place `.wav` files in `sounds/[category]/`. TARS selects one file at random for each state.
+Place PNG files in `faces/<state>/` to change the interface animations. `agent.py` resizes each frame to 800 by 480 pixels and cycles through the sorted filenames.
+
+Place WAV files in `sounds/<category>/` to change sound effects. `agent.py` picks a random WAV file from the matching directory for greetings, acknowledgments, thinking loops, and errors.
 
 ## Troubleshooting
 
-* Web search fails: Ensure `duckduckgo-search` is installed in the virtual environment.
-* Temperature sensor not found: Ensure the ESP32 is connected over USB, `pyserial` is installed, and baud rates match.
-* Missing API key: Export `GROQ_API_KEY` before running `python agent.py` or `./start_agent.sh`.
-* Playback speed mismatch: Match the sample rate in your voice model JSON configuration to `PIPER_RATE` in `agent.py`.
+* If web search fails, install `duckduckgo-search` in `venv/`.
+* If the agent cannot find the temperature sensor, check the USB connection, install `pyserial` in `venv/`, and match `sensor_serial_baud` in `config.json` to the ESP32 firmware.
+* If startup exits with a missing key error, export `GROQ_API_KEY` before running `./start_agent.sh` or `python agent.py`.
+* If voice playback sounds too fast or too slow, match `PIPER_RATE` in `agent.py` to the `sample_rate` field in your voice model `.onnx.json` file.
 
 ## License
+
 MIT License. See [LICENSE](LICENSE) for details.
