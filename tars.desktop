@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TARS
+Comment=Launch TARS
+Exec=/home/pi/tars/start_agent.sh
+Path=/home/pi/tars
+Icon=/home/pi/tars/faces/idle/idle 01.png
+Terminal=true
+Categories=Utility;

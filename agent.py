@@ -1,15 +1,3 @@
-# =========================================================================
-#  Be More Agent 🤖
-#  A Groq-Backed Voice Agent for Raspberry Pi
-#
-#  Copyright (c) 2026 brenpoly
-#  Licensed under the MIT License
-#  Source: https://github.com/brenpoly/be-more-agent
-#
-#  DISCLAIMER:
-#  This software is provided "as is", without warranty of any kind.
-#  This project is a generic framework and includes no copyrighted assets.
-# =========================================================================
 
 import tkinter as tk
 from tkinter import ttk
@@ -31,20 +19,16 @@ import wave
 import struct
 import glob
 
-# Suppress harmless library warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
 
-# Core dependencies
 import sounddevice as sd
 import numpy as np
 import scipy.signal 
 
-# --- AI ENGINES ---
 import openwakeword
 from openwakeword.model import Model
 from groq import Groq
 
-# --- WEB SEARCH (Using your working import) ---
 from duckduckgo_search import DDGS 
 
 try:
@@ -52,9 +36,6 @@ try:
 except ImportError:
     serial = None
 
-# =========================================================================
-# 1. CONFIGURATION & CONSTANTS
-# =========================================================================
 
 CONFIG_FILE = "config.json"
 MEMORY_FILE = "memory.json"
@@ -65,7 +46,6 @@ LOCAL_WHISPER_MODEL = "./whisper.cpp/models/ggml-base.en.bin"
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 SENSOR_PORT_GLOBS = ("/dev/ttyACM*", "/dev/ttyUSB*")
 
-# HARDWARE SETTINGS
 INPUT_DEVICE_NAME = None
 
 DEFAULT_CONFIG = {
@@ -83,7 +63,6 @@ DEFAULT_CONFIG = {
     "sensor_serial_timeout": 2.0
 }
 
-# GROQ SETTINGS
 GROQ_CHAT_OPTIONS = {
     "temperature": 0.7,
     "top_p": 0.9,
@@ -131,7 +110,7 @@ def resolve_input_device(config):
 
     requested_lower = str(requested).lower()
     for idx, dev in enumerate(devices):
-        print(f"[AUDIO DEBUG] Index {idx}: {dev.get('name')} (In: {dev.get('max_input_channels')})", flush=True) # DEBUG LINE
+        print(f"[AUDIO DEBUG] Index {idx}: {dev.get('name')} (In: {dev.get('max_input_channels')})", flush=True)
         if dev.get("max_input_channels", 0) > 0 and requested_lower in dev.get("name", "").lower():
             return idx
 
@@ -152,7 +131,7 @@ def choose_input_samplerate(device, preferred=None):
         candidates.append(preferred)
     try:
         device_info = sd.query_devices(device)
-        print(f"[AUDIO DEBUG] Device Info: {device_info}", flush=True) # DEBUG
+        print(f"[AUDIO DEBUG] Device Info: {device_info}", flush=True)
         if "default_samplerate" in device_info:
             candidates.append(int(device_info["default_samplerate"]))
     except Exception as e:
@@ -182,9 +161,8 @@ class BotStates:
     CAPTURING = "capturing" 
     WARMUP = "warmup"       
 
-# --- SYSTEM PROMPT ---
-BASE_SYSTEM_PROMPT = """You are a helpful robot assistant running on a Raspberry Pi.
-Personality: Cute, helpful, robot.
+BASE_SYSTEM_PROMPT = """You are TARS, a helpful assistant running on a Raspberry Pi.
+Personality: Helpful, witty, robotic.
 Style: Short sentences. Enthusiastic.
 
 INSTRUCTIONS:
@@ -202,8 +180,8 @@ You: {"action": "get_time", "value": "now"}
 User: Hello!
 You: Hi! I am ready to help!
 
-User: Search for news about robots.
-You: {"action": "search_web", "value": "robots news"}
+User: Search for news about TARS.
+You: {"action": "search_web", "value": "TARS news"}
 
 User: What is the room temperature?
 You: {"action": "get_temperature", "value": "room"}
@@ -216,15 +194,11 @@ You: Sorry, I cannot use the camera right now.
 
 SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + "\n\n" + CURRENT_CONFIG.get("system_prompt_extras", "")
 
-# Sound Directories
 greeting_sounds_dir = "sounds/greeting_sounds"
 ack_sounds_dir = "sounds/ack_sounds"
 thinking_sounds_dir = "sounds/thinking_sounds"
 error_sounds_dir = "sounds/error_sounds"
 
-# =========================================================================
-# 2. GUI CLASS
-# =========================================================================
 
 class BotGUI:
     BG_WIDTH, BG_HEIGHT = 800, 480 
@@ -236,12 +210,10 @@ class BotGUI:
         master.attributes('-fullscreen', True) 
         master.bind('<Escape>', self.exit_fullscreen)
         
-        # Inputs
         master.bind('<Return>', self.handle_ptt_toggle)
         master.bind('<space>', self.handle_speaking_interrupt)
         atexit.register(self.safe_exit)
         
-        # State
         self.current_state = BotStates.WARMUP
         self.current_volume = 0 
         self.animations = {}
@@ -265,7 +237,6 @@ class BotGUI:
         self.exiting = False
         self.groq_client = None
         
-        # --- WAKE WORD INITIALIZATION ---
         print("[INIT] Loading Wake Word...", flush=True)
         self.oww_model = None
         if os.path.exists(WAKE_WORD_MODEL):
@@ -283,7 +254,6 @@ class BotGUI:
         else:
             print(f"[CRITICAL] Model not found: {WAKE_WORD_MODEL}")
 
-        # GUI Setup
         self.background_label = tk.Label(master)
         self.background_label.place(x=0, y=0, width=self.BG_WIDTH, height=self.BG_HEIGHT)
         self.background_label.bind('<Button-1>', self.toggle_hud_visibility) 
@@ -304,7 +274,6 @@ class BotGUI:
         
         threading.Thread(target=self.safe_main_execution, daemon=True).start()
 
-    # --- HELPERS ---
 
     def extract_json_from_text(self, text):
         try:
@@ -439,7 +408,6 @@ class BotGUI:
                 if state in self.animations.get("idle", []):
                      self.animations[state] = self.animations["idle"]
                 else:
-                    # Blue screen fallback
                     blank = Image.new('RGB', (self.BG_WIDTH, self.BG_HEIGHT), color='#0000FF')
                     self.animations[state].append(ImageTk.PhotoImage(blank))
 
@@ -595,9 +563,6 @@ class BotGUI:
             except Exception:
                 pass
 
-    # =========================================================================
-    # 3. ACTION ROUTER
-    # =========================================================================
     
     def execute_action_and_get_result(self, action_data):
         raw_action = action_data.get("action", "").lower().strip()
@@ -639,10 +604,8 @@ class BotGUI:
         elif action == "search_web":
             print(f"Searching web for: {value}...", flush=True)
             try:
-                # 'us-en' region is often more stable for CLI queries
                 with DDGS() as ddgs:
                     results = []
-                    # 1. News search
                     try:
                         results = list(ddgs.news(value, region='us-en', max_results=1))
                         if results: 
@@ -650,7 +613,6 @@ class BotGUI:
                     except Exception as e: 
                         print(f"[DEBUG] News Search Error: {e}", flush=True)
                     
-                    # 2. Text fallback
                     if not results:
                         print("[DEBUG] No news found, trying text search...", flush=True)
                         try: 
@@ -662,7 +624,6 @@ class BotGUI:
 
                     if results:
                         r = results[0]
-                        # Safe get
                         title = r.get('title', 'No Title')
                         body = r.get('body', r.get('snippet', 'No Body'))
                         return f"SEARCH RESULTS for '{value}':\nTitle: {title}\nSnippet: {body[:300]}"
@@ -675,9 +636,6 @@ class BotGUI:
         
         return None
 
-    # =========================================================================
-    # 4. CORE LOGIC
-    # =========================================================================
 
     def safe_main_execution(self):
         try:
@@ -753,20 +711,15 @@ class BotGUI:
             "device": INPUT_DEVICE_NAME
         }
 
-        # Try to find a compatible block size and sample rate
         try:
-            # First attempt: standard settings
             self._listen_loop(stream_args, input_chunk_size, CHUNK_SIZE, use_resampling)
         except StopIteration as si:
             return str(si)
         except Exception as e:
             print(f"[AUDIO] Stream failed with defaults: {e}. Retrying with loose settings...", flush=True)
             try:
-                # Second attempt: Let PortAudio decide blocksize (0) and latency
                 stream_args["blocksize"] = 0 
                 stream_args["latency"] = "high"
-                # If blocksize is variable, we must read specific amounts manually or handle buffering.
-                # Simplest fallback: Just attempt small fixed block
                 stream_args["blocksize"] = 1024
                 use_resampling = True
                 
@@ -781,18 +734,11 @@ class BotGUI:
         return "WAKE"
 
     def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
-        # Force software backend (no mmap) via environment variable if possible, 
-        # but here we can try to hint loop settings.
-        # However, the most effective fix for ALSA mmap issues is often just asking for 'blocksize=0' 
-        # and letting portaudio manage the buffering, OR very small chunks.
         
-        # Let's try to be less aggressive with reads.
         
          with sd.InputStream(**stream_args) as stream:
                 print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
                 
-                # Pre-allocate buffer for speed
-                # If blocksize is 0, we read what is available.
                 
                 while True:
                     if self.ptt_event.is_set():
@@ -804,56 +750,42 @@ class BotGUI:
                         sys.stdin.readline()
                         raise StopIteration("CLI")
 
-                    # If fallback mode (blocksize 0), read fixed amount
                     read_size = input_chunk_size
                     if stream_args.get('blocksize') == 0:
-                        read_size = 1024 # Safe small read
+                        read_size = 1024
                     
                     try:
                         data, overflow = stream.read(read_size)
                         if overflow:
                             print("!", end="", flush=True) 
-                            # If we overflow excessively, raise error to trigger fallback to SAFE MODE (PulseAudio/Software)
-                            # We can use a simple counter attached to the function or object, but here raising immediately 
-                            # after a few in a row is safest.
                             raise RuntimeError("Audio Buffer Overflow - Triggering Safe Mode")
                     except Exception as e:
-                        # Convert uncatchable PaErrorCode wrapper to standard Exception if needed
-                        # But honestly, `raise e` should work... unless it's a SystemExit?
-                        # Let's wrap it in a new exception to be sure it bubbles up
                         raise RuntimeError(f"Audio read failed: {e}")
 
                     audio_data = np.frombuffer(data, dtype=np.int16)
 
-                    # Ensure flattening for openwakeword compatibility
                     if audio_data.ndim > 1:
                         audio_data = audio_data.flatten()
 
                     if use_resampling:
-                        # FAST RESAMPLING: Nearest-neighbor slicing instead of scipy.signal.resample
-                        # This avoids the CPU bottleneck that causes overflow (!!!!!!!) on Raspberry Pi
                         step = len(audio_data) / target_chunk_size
                         indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
                         audio_data = audio_data[indices]
                     
-                    # Convert to float for model prediction without needing heavy resampling logic
-                    # The wake word model needs 16000, which we just faked above.
                     
-                    # Debug volume occasionally
                     current_max = np.max(np.abs(audio_data))
                     
-                    # Only predict if volume is significant to save CPU
                     if current_max > 200: 
                         prediction = self.oww_model.predict(audio_data)
                         for mdl in self.oww_model.prediction_buffer.keys():
                             score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                            if score > 0.1: # Show potential triggers
+                            if score > 0.1:
                                 print(f"\r[Oww] Score: {score:.3f} | Vol: {current_max}   ", end="", flush=True)
 
                             if score > WAKE_WORD_THRESHOLD:
                                 print(f"\n[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
                                 self.oww_model.reset() 
-                                return # Success
+                                return
 
 
     def record_voice_adaptive(self, filename="input.wav"):
@@ -886,7 +818,6 @@ class BotGUI:
             else: silent_chunks = 0
 
         try:
-            # Explicitly close stream if it exists to free hardware
             sd.stop()
             time.sleep(0.2)
             
@@ -909,8 +840,6 @@ class BotGUI:
         def callback(indata, frames, time_info, status): buffer.append(indata.copy())
         
         try:
-            # Explicitly close stream if it exists to free hardware
-            # This is critical on Pi 5 where hardware contention causes freezes
             sd.stop() 
             time.sleep(0.2)
             
@@ -971,9 +900,6 @@ class BotGUI:
             print(f"Transcription Error: {e}")
             return ""
 
-    # =========================================================================
-    # 5. CHAT & RESPOND
-    # =========================================================================
 
     def chat_and_respond(self, text, img_path=None):
         if "forget everything" in text.lower() or "reset memory" in text.lower():
